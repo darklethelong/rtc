@@ -9,6 +9,20 @@ import numpy as np
 import os
 from sklearn.metrics import classification_report, confusion_matrix
 
+# Configure TensorFlow to be more resilient with GPU issues
+try:
+    # Attempt to configure GPU memory growth
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print("GPU memory growth enabled")
+    else:
+        print("No GPUs found, using CPU")
+except Exception as e:
+    print(f"GPU configuration failed: {e}. Using CPU instead.")
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 class ComplaintDetector:
     def __init__(
         self, 

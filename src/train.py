@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 import sys
 import json
 
+# Force CPU usage to avoid CUDA errors
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 # Add src directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

@@ -4,6 +4,9 @@ import argparse
 import subprocess
 import sys
 
+# Force CPU usage to avoid CUDA errors
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 def check_requirements():
     """Check if all requirements are installed."""
     try:
