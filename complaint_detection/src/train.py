@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 
-from utils.preprocessor import TextPreprocessor
-from models.complaint_classifier import ComplaintClassifier
+from complaint_detection.utils.preprocessor import TextPreprocessor
+from complaint_detection.models.complaint_classifier import ComplaintClassifier
 
 def evaluate_model(model, X_val, y_val, threshold=0.5):
     """Comprehensive model evaluation"""

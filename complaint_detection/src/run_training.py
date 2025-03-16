@@ -10,6 +10,8 @@ from complaint_detection.src.train import train_model
 
 def main():
     # Set paths
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(current_dir))
     data_path = os.path.join(project_root, 'complaint_detection', 'data', 'raw', 'conversations.csv')
     model_save_path = os.path.join(project_root, 'complaint_detection', 'models', 'saved_models')
     

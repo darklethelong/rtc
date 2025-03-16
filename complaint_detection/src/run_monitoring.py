@@ -26,6 +26,8 @@ def get_latest_model(model_dir):
 
 def main():
     # Set paths
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(current_dir))
     model_dir = os.path.join(project_root, 'complaint_detection', 'models', 'saved_models')
     
     try:
