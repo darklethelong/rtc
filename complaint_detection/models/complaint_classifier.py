@@ -1,15 +1,22 @@
-import tensorflow as tf
-from tensorflow.keras.layers import (
-    Input, Embedding, Conv1D, MaxPooling1D, LSTM, 
-    Dense, Dropout, LayerNormalization, MultiHeadAttention,
-    GlobalAveragePooling1D, concatenate, Bidirectional,
-    GRU, BatchNormalization
-)
-from tensorflow.keras.models import Model
-from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.optim import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import numpy as np
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
-class ComplaintClassifier:
+class SelfAttention(nn.Module):
+    def __init__(self, hidden_dim, num_heads):
+        super().__init__()
+        self.multihead_attn = nn.MultiheadAttention(hidden_dim, num_heads)
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        
+    def forward(self, x):
+        attn_output, _ = self.multihead_attn(x, x, x)
+        return self.layer_norm(x + attn_output)
+
+class ComplaintClassifier(nn.Module):
     def __init__(
         self, 
         max_words=10000,
@@ -20,8 +27,10 @@ class ComplaintClassifier:
         num_heads=8,
         dropout_rate=0.5,
         use_pretrained_embeddings=False,
-        embedding_matrix=None
+        embedding_matrix=None,
+        device='cuda' if torch.cuda.is_available() else 'cpu'
     ):
+        super().__init__()
         self.max_words = max_words
         self.max_len = max_len
         self.embedding_dim = embedding_dim
@@ -29,193 +38,193 @@ class ComplaintClassifier:
         self.lstm_units = lstm_units
         self.num_heads = num_heads
         self.dropout_rate = dropout_rate
-        self.use_pretrained_embeddings = use_pretrained_embeddings
-        self.embedding_matrix = embedding_matrix
-        self.model = self._build_model()
-        
-    def _build_cnn_branch(self, embedding_output, kernel_sizes=[3, 4, 5]):
-        conv_outputs = []
-        for kernel_size in kernel_sizes:
-            conv = Conv1D(
-                self.num_filters,
-                kernel_size,
-                activation='relu',
-                padding='same',
-                kernel_initializer='glorot_uniform'
-            )(embedding_output)
-            conv = BatchNormalization()(conv)
-            conv = MaxPooling1D(pool_size=2)(conv)
-            conv_outputs.append(conv)
-        return conv_outputs
-    
-    def _build_rnn_branch(self, embedding_output):
-        # Bidirectional LSTM layer
-        lstm = Bidirectional(
-            LSTM(self.lstm_units, return_sequences=True)
-        )(embedding_output)
-        
-        # GRU layer for capturing different temporal patterns
-        gru = Bidirectional(
-            GRU(self.lstm_units // 2, return_sequences=True)
-        )(lstm)
-        
-        # Multi-Head Self Attention
-        attention = MultiHeadAttention(
-            num_heads=self.num_heads,
-            key_dim=self.lstm_units // self.num_heads
-        )(gru, gru)
-        
-        # Add & Norm
-        attention = LayerNormalization()(attention + gru)
-        
-        return attention
-
-    def _build_model(self):
-        # Input layer
-        inputs = Input(shape=(self.max_len,))
+        self.device = device
         
         # Embedding layer
-        if self.use_pretrained_embeddings and self.embedding_matrix is not None:
-            embedding = Embedding(
-                input_dim=self.max_words,
-                output_dim=self.embedding_dim,
-                input_length=self.max_len,
-                weights=[self.embedding_matrix],
-                trainable=False
-            )(inputs)
-        else:
-            embedding = Embedding(
-                input_dim=self.max_words,
-                output_dim=self.embedding_dim,
-                input_length=self.max_len
-            )(inputs)
-        
-        # CNN Branch
-        conv_outputs = self._build_cnn_branch(embedding)
-        
-        # RNN Branch with Self-Attention
-        rnn_output = self._build_rnn_branch(embedding)
-        
-        # Global Pooling for all branches
-        pooled_outputs = []
-        for conv_output in conv_outputs:
-            pooled = GlobalAveragePooling1D()(conv_output)
-            pooled_outputs.append(pooled)
-        
-        pooled_rnn = GlobalAveragePooling1D()(rnn_output)
-        pooled_outputs.append(pooled_rnn)
-        
-        # Concatenate all features
-        concat = concatenate(pooled_outputs)
-        
-        # Dense layers with residual connections
-        dense1 = Dense(256, activation='relu')(concat)
-        dense1 = BatchNormalization()(dense1)
-        dense1 = Dropout(self.dropout_rate)(dense1)
-        
-        dense2 = Dense(128, activation='relu')(dense1)
-        dense2 = BatchNormalization()(dense2)
-        dense2 = Dropout(self.dropout_rate * 0.8)(dense2)
-        
-        # Residual connection
-        dense3 = Dense(128, activation='relu')(dense2)
-        dense3 = LayerNormalization()(dense3 + dense2)
-        dense3 = Dropout(self.dropout_rate * 0.5)(dense3)
-        
-        # Output layer
-        outputs = Dense(1, activation='sigmoid')(dense3)
-        
-        model = Model(inputs=inputs, outputs=outputs)
-        return model
-
-    def compile_model(self, learning_rate=0.001):
-        optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-        self.model.compile(
-            optimizer=optimizer,
-            loss='binary_crossentropy',
-            metrics=[
-                'accuracy',
-                tf.keras.metrics.AUC(name='auc'),
-                tf.keras.metrics.Precision(name='precision'),
-                tf.keras.metrics.Recall(name='recall'),
-                tf.keras.metrics.F1Score(name='f1')
-            ]
-        )
-        
-    def get_callbacks(self, checkpoint_path):
-        callbacks = [
-            EarlyStopping(
-                monitor='val_loss',
-                patience=3,
-                restore_best_weights=True
-            ),
-            ModelCheckpoint(
-                filepath=checkpoint_path,
-                monitor='val_loss',
-                save_best_only=True,
-                save_weights_only=False
-            ),
-            ReduceLROnPlateau(
-                monitor='val_loss',
-                factor=0.5,
-                patience=2,
-                min_lr=0.00001
+        if use_pretrained_embeddings and embedding_matrix is not None:
+            self.embedding = nn.Embedding.from_pretrained(
+                torch.FloatTensor(embedding_matrix),
+                freeze=True,
+                padding_idx=0
             )
-        ]
-        return callbacks
+        else:
+            self.embedding = nn.Embedding(
+                max_words,
+                embedding_dim,
+                padding_idx=0
+            )
         
-    def train(
-        self,
-        x_train,
-        y_train,
-        validation_data=None,
-        epochs=10,
-        batch_size=32,
-        checkpoint_path=None,
-        class_weights=None,
-        **kwargs
-    ):
-        callbacks = self.get_callbacks(checkpoint_path) if checkpoint_path else None
+        # CNN layers
+        self.convs = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(embedding_dim, num_filters, kernel_size),
+                nn.ReLU(),
+                nn.BatchNorm1d(num_filters),
+                nn.MaxPool1d(2)
+            ) for kernel_size in [3, 4, 5]
+        ])
         
-        # Handle class imbalance
-        if class_weights is None and y_train is not None:
-            n_neg = np.sum(y_train == 0)
-            n_pos = np.sum(y_train == 1)
-            class_weights = {
-                0: (1 / n_neg) * (len(y_train) / 2.0),
-                1: (1 / n_pos) * (len(y_train) / 2.0)
-            }
-        
-        return self.model.fit(
-            x_train,
-            y_train,
-            validation_data=validation_data,
-            epochs=epochs,
-            batch_size=batch_size,
-            callbacks=callbacks,
-            class_weight=class_weights,
-            **kwargs
+        # RNN layers
+        self.bilstm = nn.LSTM(
+            embedding_dim,
+            lstm_units,
+            bidirectional=True,
+            batch_first=True
         )
         
-    def predict(self, x, batch_size=None):
-        return self.model.predict(x, batch_size=batch_size)
-    
-    def predict_proba(self, x, batch_size=None):
-        return self.predict(x, batch_size=batch_size)
-
-    def save_model(self, path):
-        self.model.save(path)
+        self.bigru = nn.GRU(
+            lstm_units * 2,
+            lstm_units // 2,
+            bidirectional=True,
+            batch_first=True
+        )
         
-    def get_model_summary(self):
-        """Get model architecture summary"""
-        return self.model.summary()
-
+        # Self-attention
+        self.attention = SelfAttention(lstm_units, num_heads)
+        
+        # Dense layers
+        cnn_out_dim = num_filters * 3  # 3 kernel sizes
+        rnn_out_dim = lstm_units
+        total_features = cnn_out_dim + rnn_out_dim
+        
+        self.fc1 = nn.Linear(total_features, 256)
+        self.bn1 = nn.BatchNorm1d(256)
+        self.dropout1 = nn.Dropout(dropout_rate)
+        
+        self.fc2 = nn.Linear(256, 128)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.dropout2 = nn.Dropout(dropout_rate * 0.8)
+        
+        self.fc3 = nn.Linear(128, 128)
+        self.layer_norm = nn.LayerNorm(128)
+        self.dropout3 = nn.Dropout(dropout_rate * 0.5)
+        
+        self.output = nn.Linear(128, 1)
+        
+        self.to(device)
+        
+    def forward(self, x):
+        # Embedding
+        x = self.embedding(x)  # [batch, seq_len, emb_dim]
+        
+        # CNN branch
+        x_conv = x.permute(0, 2, 1)  # [batch, emb_dim, seq_len]
+        conv_outputs = []
+        for conv in self.convs:
+            conv_out = conv(x_conv)
+            conv_out = F.adaptive_avg_pool1d(conv_out, 1).squeeze(-1)
+            conv_outputs.append(conv_out)
+        
+        # RNN branch
+        lstm_out, _ = self.bilstm(x)
+        gru_out, _ = self.bigru(lstm_out)
+        attention_out = self.attention(gru_out)
+        rnn_out = F.adaptive_avg_pool1d(attention_out.permute(0, 2, 1), 1).squeeze(-1)
+        
+        # Concatenate features
+        concat = torch.cat(conv_outputs + [rnn_out], dim=1)
+        
+        # Dense layers with residual connection
+        x = self.fc1(concat)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.dropout1(x)
+        
+        x = self.fc2(x)
+        x = self.bn2(x)
+        x = F.relu(x)
+        x = self.dropout2(x)
+        
+        residual = x
+        x = self.fc3(x)
+        x = self.layer_norm(x + residual)
+        x = F.relu(x)
+        x = self.dropout3(x)
+        
+        # Output
+        x = self.output(x)
+        x = torch.sigmoid(x)
+        
+        return x
+        
+    def configure_optimizers(self, learning_rate=0.001):
+        optimizer = Adam(self.parameters(), lr=learning_rate)
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=2,
+            min_lr=0.00001
+        )
+        return optimizer, scheduler
+    
+    def training_step(self, batch, device):
+        x, y = batch
+        x = x.to(device)
+        y = y.to(device).float()
+        
+        self.train()
+        outputs = self(x)
+        loss = F.binary_cross_entropy(outputs.squeeze(), y)
+        
+        return loss
+    
+    def validation_step(self, batch, device):
+        x, y = batch
+        x = x.to(device)
+        y = y.to(device).float()
+        
+        self.eval()
+        with torch.no_grad():
+            outputs = self(x)
+            loss = F.binary_cross_entropy(outputs.squeeze(), y)
+            preds = (outputs > 0.5).float()
+            
+            # Move tensors to CPU for metric calculation
+            y_cpu = y.cpu().numpy()
+            preds_cpu = preds.cpu().numpy()
+            probs_cpu = outputs.cpu().numpy()
+            
+            metrics = {
+                'val_loss': loss.item(),
+                'accuracy': accuracy_score(y_cpu, preds_cpu),
+                'precision': precision_score(y_cpu, preds_cpu, zero_division=0),
+                'recall': recall_score(y_cpu, preds_cpu, zero_division=0),
+                'f1': f1_score(y_cpu, preds_cpu, zero_division=0),
+                'auc': roc_auc_score(y_cpu, probs_cpu) if len(np.unique(y_cpu)) > 1 else 0.5
+            }
+            
+            return metrics
+    
+    def predict(self, x, device):
+        x = torch.tensor(x, dtype=torch.long).to(device)
+        
+        self.eval()
+        with torch.no_grad():
+            outputs = self(x)
+            probs = outputs.cpu().numpy()
+            preds = (outputs > 0.5).float().cpu().numpy()
+            
+        return preds, probs
+    
+    def save_model(self, path):
+        torch.save({
+            'model_state_dict': self.state_dict(),
+            'model_config': {
+                'max_words': self.max_words,
+                'max_len': self.max_len,
+                'embedding_dim': self.embedding_dim,
+                'num_filters': self.num_filters,
+                'lstm_units': self.lstm_units,
+                'num_heads': self.num_heads,
+                'dropout_rate': self.dropout_rate
+            }
+        }, path)
+    
     @classmethod
-    def load_model(cls, path):
-        """Load a saved model"""
-        try:
-            model = tf.keras.models.load_model(path)
-            return model
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            raise 
+    def load_model(cls, path, device='cuda' if torch.cuda.is_available() else 'cpu'):
+        checkpoint = torch.load(path, map_location=device)
+        model = cls(**checkpoint['model_config'])
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(device)
+        return model 
