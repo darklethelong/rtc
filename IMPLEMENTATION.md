@@ -1,225 +1,228 @@
 # Real-Time Call Center Complaint Detection Implementation Guide
 
-## Step 1: Environment Setup
+This guide details the implementation steps for the real-time complaint detection system for call center conversations.
 
-1. Create a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+## Project Structure
+
+```
+complaint_detection/
+├── data/                # Data storage
+│   ├── raw/            # Raw conversation data
+│   └── processed/      # Processed data
+├── models/             # Model storage
+│   └── saved_models/   # Saved model checkpoints and results
+├── src/                # Source code
+│   ├── train.py       # Training pipeline
+│   ├── run_training.py # Training script
+│   ├── run_monitoring.py # Monitoring script
+│   └── analyze_conversation.py # Conversation analysis
+├── utils/             # Utility modules
+│   ├── preprocessor.py # Text preprocessing
+│   └── real_time_monitor.py # Real-time monitoring
+└── tests/             # Unit tests
 ```
 
-2. Install dependencies:
+## Implementation Steps
+
+### 1. Environment Setup
+
 ```bash
+# Create virtual environment
+python -m venv venv
+
+# Activate virtual environment
+# On Windows:
+.\venv\Scripts\activate
+# On Unix/Mac:
+source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-## Step 2: Project Structure Setup
+### 2. Data Preparation
 
-Create the following directory structure:
-```
-complaint_detection/
-├── data/
-│   ├── raw/                  # Raw conversation data
-│   └── processed/            # Preprocessed data
-├── models/
-│   └── saved_models/        # Trained model checkpoints
-├── utils/
-│   ├── __init__.py
-│   ├── preprocessor.py      # Text preprocessing utilities
-│   └── real_time_monitor.py # Real-time visualization
-├── notebooks/
-│   └── model_development.ipynb  # Development notebook
-└── src/
-    ├── __init__.py
-    ├── model.py             # Model architecture
-    ├── train.py            # Training script
-    └── monitor.py          # Real-time monitoring
-```
+Place your conversation data in `complaint_detection/data/raw/conversations.csv` with the following format:
 
-## Step 3: Data Preparation
-
-1. Format your conversation data as CSV:
 ```csv
 text,label
 "Agent: Hello, how can I help you today?
-Caller: My account is showing wrong balance.",complaint
+Caller: [Customer message]
+Agent: [Agent response]
+Caller: [Customer reply]",complaint/non-complaint
 ```
 
-2. Data requirements:
-- Text column: Contains conversation text
-- Label column: Binary (complaint/non-complaint)
-- Optional: Include timestamps in conversation text
+Example data structure:
+- Each conversation is a multi-turn dialogue
+- Each turn starts with either "Agent:" or "Caller:"
+- Labels are binary: "complaint" or "non-complaint"
+- Sensitive information should be masked (e.g., XXXX-XXXX-1234)
 
-## Step 4: Model Development
+### 3. Model Architecture
 
-1. Implement the hybrid CNN-LSTM architecture:
-```python
-# src/model.py
-class ComplaintClassifier:
-    def __init__(self):
-        # Initialize model parameters
-        pass
-    
-    def build_model(self):
-        # Implement CNN-LSTM architecture
-        pass
-```
+The system uses a hybrid CNN-LSTM architecture with attention mechanism:
 
-2. Key model components:
-- Embedding layer
-- CNN layers for n-gram features
-- LSTM layers for sequential context
-- Attention mechanism
-- Dense layers for classification
+1. **Text Processing Branch**:
+   - Embedding layer for word vectors
+   - Multiple CNN layers for n-gram features
+   - Bidirectional LSTM for sequential context
+   - Multi-head attention mechanism
 
-## Step 5: Training Pipeline
+2. **Feature Processing**:
+   - Domain-specific feature extraction
+   - Banking terms detection
+   - Complaint indicator analysis
+   - Conversation structure analysis
 
-1. Data preprocessing:
-```python
-# utils/preprocessor.py
-class TextPreprocessor:
-    def __init__(self):
-        # Initialize preprocessing parameters
-        pass
-    
-    def preprocess(self, text):
-        # Implement text preprocessing
-        pass
-```
+3. **Output Layer**:
+   - Dense layers with residual connections
+   - Batch normalization
+   - Dropout for regularization
+   - Sigmoid activation for binary classification
 
-2. Training script:
-```python
-# src/train.py
-def train_model():
-    # Load and preprocess data
-    # Train model
-    # Save model checkpoints
-    pass
-```
+### 4. Training the Model
 
-## Step 6: Real-time Monitoring
+Run the training script:
 
-1. Implement visualization:
-```python
-# utils/real_time_monitor.py
-class ComplaintMonitor:
-    def __init__(self):
-        # Initialize visualization
-        pass
-    
-    def update(self, probability):
-        # Update real-time charts
-        pass
-```
-
-2. Key visualization components:
-- Probability timeline
-- Current status gauge
-- Complaint level distribution
-
-## Step 7: Testing and Validation
-
-1. Test data preprocessing:
-```python
-python -m unittest tests/test_preprocessor.py
-```
-
-2. Test model architecture:
-```python
-python -m unittest tests/test_model.py
-```
-
-3. Test real-time monitoring:
-```python
-python -m unittest tests/test_monitor.py
-```
-
-## Step 8: Running the System
-
-1. Train the model:
 ```bash
-python src/train.py --data_path data/conversations.csv --epochs 10
+python complaint_detection/src/run_training.py
 ```
 
-2. Start real-time monitoring:
+The training process includes:
+- Data preprocessing and feature extraction
+- Cross-validation for model evaluation
+- Model training with early stopping
+- Performance metrics calculation
+- Model and vocabulary saving
+
+Training outputs will be saved in `models/saved_models/results_[timestamp]/`:
+- Trained model
+- Domain vocabulary
+- Evaluation metrics
+- Performance plots
+
+### 5. Real-time Monitoring
+
+Start the monitoring system:
+
 ```bash
-python src/monitor.py --model_path models/saved_models/model_latest.h5
+python complaint_detection/src/run_monitoring.py
 ```
 
-## Step 9: Performance Optimization
+Features:
+- Real-time conversation analysis
+- Sliding window approach (last 4 utterances)
+- Probability timeline visualization
+- Complaint level classification:
+  - High (> 0.7)
+  - Moderate (0.4 - 0.7)
+  - Mild (0.2 - 0.4)
+  - None (< 0.2)
 
-1. Model optimization:
-- Batch normalization
-- Dropout layers
-- Learning rate scheduling
-- Early stopping
+Usage:
+```bash
+Enter utterance: Agent: How can I help you today?
+Enter utterance: Caller: I have an issue with my account
+...
+```
 
-2. Real-time processing:
-- Efficient text preprocessing
-- Batch prediction
-- Caching mechanisms
+### 6. Performance Optimization
 
-## Step 10: Deployment Considerations
+The system is optimized for real-time performance through:
+1. Efficient preprocessing pipeline
+2. Cached tokenization
+3. Lightweight CNN filters
+4. Optimized LSTM units
+5. Batch normalization for faster convergence
 
-1. Model serving:
-- Save model in TensorFlow SavedModel format
-- Implement model versioning
-- Setup model reload mechanism
+### 7. Error Handling
 
-2. Monitoring system:
-- Implement error handling
-- Add logging
-- Setup performance monitoring
+The system includes robust error handling for:
+- Missing or malformed data
+- Invalid conversation format
+- Model loading failures
+- Real-time processing errors
+- Masked sensitive information
 
-## Step 11: Maintenance and Updates
+### 8. Monitoring and Evaluation
 
-1. Regular tasks:
-- Retrain model with new data
-- Update domain vocabulary
-- Monitor system performance
-- Update visualization thresholds
+Real-time monitoring provides:
+1. Probability Timeline
+   - Live complaint probability tracking
+   - Color-coded threshold indicators
+   - Sliding window view
 
-2. Documentation:
-- Keep implementation guide updated
-- Document model versions
-- Track system changes
+2. Current Status
+   - Complaint level indicator
+   - Probability score
+   - Conversation context
 
-## Common Issues and Solutions
+3. Performance Metrics
+   - Accuracy
+   - F1-Score
+   - ROC-AUC
+   - Precision-Recall curves
 
-1. Model Performance:
-- Issue: Low accuracy
-  - Solution: Increase training data
-  - Solution: Adjust model architecture
-  - Solution: Fine-tune hyperparameters
+### 9. Production Deployment
 
-2. Real-time Processing:
-- Issue: Slow prediction
-  - Solution: Optimize preprocessing
-  - Solution: Use batch prediction
-  - Solution: Implement caching
+For production deployment:
+1. Ensure all sensitive data is properly masked
+2. Configure appropriate logging
+3. Set up model versioning
+4. Implement API endpoints if needed
+5. Monitor system resources
 
-3. Visualization:
-- Issue: Memory leaks
-  - Solution: Clear old data
-  - Solution: Implement window size
-  - Solution: Optimize plot updates
+### 10. Maintenance and Updates
+
+Regular maintenance tasks:
+1. Retrain model with new data
+2. Update domain vocabulary
+3. Tune hyperparameters
+4. Monitor performance metrics
+5. Update dependencies
 
 ## Best Practices
 
-1. Code Quality:
-- Use consistent coding style
-- Write comprehensive docstrings
-- Implement error handling
-- Add logging
+1. **Data Handling**:
+   - Regularly backup conversation data
+   - Validate data format before processing
+   - Handle sensitive information appropriately
 
-2. Model Development:
-- Version control for models
-- Regular evaluation
-- Performance monitoring
-- Data validation
+2. **Model Management**:
+   - Version control for models
+   - Regular performance evaluation
+   - Maintain model registry
 
-3. System Maintenance:
-- Regular backups
-- Performance monitoring
-- Error logging
-- User feedback tracking 
+3. **Monitoring**:
+   - Log system performance
+   - Track resource usage
+   - Monitor prediction quality
+
+4. **Security**:
+   - Secure data storage
+   - Proper authentication
+   - Regular security updates
+
+## Troubleshooting
+
+Common issues and solutions:
+
+1. **Model Loading Errors**:
+   - Check model path
+   - Verify model version compatibility
+   - Ensure all dependencies are installed
+
+2. **Data Processing Issues**:
+   - Validate input format
+   - Check for missing values
+   - Verify text encoding
+
+3. **Performance Issues**:
+   - Monitor memory usage
+   - Check batch size
+   - Optimize preprocessing pipeline
+
+4. **Visualization Problems**:
+   - Verify matplotlib backend
+   - Check display configuration
+   - Update plotting libraries 
