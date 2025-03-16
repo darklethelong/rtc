@@ -1,0 +1,21 @@
+text,label
+"Agent: Hello, how can I help you today?
+Caller: My account is showing wrong balance. I checked yesterday and there was $500 more.
+Agent: I apologize for the inconvenience. Let me check your account details.
+Caller: This is very frustrating. I need that money for bills.",complaint
+"Agent: Good morning, welcome to our banking service.
+Caller: Hi, I'd like to know my account balance please.
+Agent: I'll help you with that. Can you please verify your identity?
+Caller: Sure, my account number is XXXX-XXXX-1234.",non-complaint
+"Agent: Thank you for calling our support. How may I assist you?
+Caller: I've been charged twice for a transaction! This is unacceptable.
+Agent: I understand your concern. Let me look into this duplicate charge.
+Caller: Please fix this immediately. It's causing me problems with other payments.",complaint
+"Agent: Welcome to customer service. How can I help?
+Caller: I received a notification about a new feature in the mobile app.
+Agent: Yes, we recently updated our mobile banking app. Would you like to learn more?
+Caller: Yes, please tell me about it.",non-complaint
+"Agent: Hello, thank you for calling. What can I do for you today?
+Caller: My card was declined even though I have money in my account!
+Agent: I'm sorry to hear that. Let me check what's happening with your card.
+Caller: This is the third time this week. I'm really upset about this.",complaint 
