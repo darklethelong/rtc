@@ -10,4 +10,7 @@ seaborn==0.13.0
 tqdm==4.66.1
 pytest==7.4.3
 ipython==8.17.2
-jupyter==1.0.0 
+jupyter==1.0.0
+streamlit==1.28.2
+plotly==5.18.0
+spacy==3.7.2
