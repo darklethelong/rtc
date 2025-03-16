@@ -7,145 +7,100 @@ import numpy as np
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 
 class SelfAttention(nn.Module):
-    def __init__(self, hidden_dim, num_heads):
+    def __init__(self, hidden_dim):
         super().__init__()
-        self.multihead_attn = nn.MultiheadAttention(hidden_dim, num_heads)
-        self.layer_norm = nn.LayerNorm(hidden_dim)
-        
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1)
+        )
+    
     def forward(self, x):
-        attn_output, _ = self.multihead_attn(x, x, x)
-        return self.layer_norm(x + attn_output)
+        # x shape: (batch_size, seq_len, hidden_dim)
+        attention_weights = F.softmax(self.attention(x), dim=1)
+        # attention_weights shape: (batch_size, seq_len, 1)
+        attended = torch.sum(attention_weights * x, dim=1)
+        # attended shape: (batch_size, hidden_dim)
+        return attended
 
 class ComplaintClassifier(nn.Module):
     def __init__(
-        self, 
-        max_words=10000,
-        max_len=200,
+        self,
+        vocab_size,
         embedding_dim=100,
+        hidden_dim=128,
         num_filters=128,
-        lstm_units=64,
-        num_heads=8,
-        dropout_rate=0.5,
-        use_pretrained_embeddings=False,
-        embedding_matrix=None,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        filter_sizes=[3, 4, 5],
+        dropout=0.5
     ):
         super().__init__()
-        self.max_words = max_words
-        self.max_len = max_len
-        self.embedding_dim = embedding_dim
-        self.num_filters = num_filters
-        self.lstm_units = lstm_units
-        self.num_heads = num_heads
-        self.dropout_rate = dropout_rate
-        self.device = device
         
         # Embedding layer
-        if use_pretrained_embeddings and embedding_matrix is not None:
-            self.embedding = nn.Embedding.from_pretrained(
-                torch.FloatTensor(embedding_matrix),
-                freeze=True,
-                padding_idx=0
-            )
-        else:
-            self.embedding = nn.Embedding(
-                max_words,
-                embedding_dim,
-                padding_idx=0
-            )
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         
         # CNN layers
         self.convs = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv1d(embedding_dim, num_filters, kernel_size),
-                nn.ReLU(),
-                nn.BatchNorm1d(num_filters),
-                nn.MaxPool1d(2)
-            ) for kernel_size in [3, 4, 5]
+            nn.Conv1d(
+                in_channels=embedding_dim,
+                out_channels=num_filters,
+                kernel_size=fs
+            ) for fs in filter_sizes
         ])
         
-        # RNN layers
-        self.bilstm = nn.LSTM(
-            embedding_dim,
-            lstm_units,
+        # BiLSTM layer
+        self.lstm = nn.LSTM(
+            input_size=num_filters * len(filter_sizes),
+            hidden_size=hidden_dim,
             bidirectional=True,
             batch_first=True
         )
         
-        self.bigru = nn.GRU(
-            lstm_units * 2,
-            lstm_units // 2,
-            bidirectional=True,
-            batch_first=True
-        )
+        # Self-attention layer
+        self.attention = SelfAttention(hidden_dim * 2)  # *2 for bidirectional
         
-        # Self-attention
-        self.attention = SelfAttention(lstm_units, num_heads)
+        # Dropout layer
+        self.dropout = nn.Dropout(dropout)
         
-        # Dense layers
-        cnn_out_dim = num_filters * 3  # 3 kernel sizes
-        rnn_out_dim = lstm_units
-        total_features = cnn_out_dim + rnn_out_dim
-        
-        self.fc1 = nn.Linear(total_features, 256)
-        self.bn1 = nn.BatchNorm1d(256)
-        self.dropout1 = nn.Dropout(dropout_rate)
-        
-        self.fc2 = nn.Linear(256, 128)
-        self.bn2 = nn.BatchNorm1d(128)
-        self.dropout2 = nn.Dropout(dropout_rate * 0.8)
-        
-        self.fc3 = nn.Linear(128, 128)
-        self.layer_norm = nn.LayerNorm(128)
-        self.dropout3 = nn.Dropout(dropout_rate * 0.5)
-        
-        self.output = nn.Linear(128, 1)
-        
-        self.to(device)
-        
+        # Output layer
+        self.fc = nn.Linear(hidden_dim * 2, 1)  # *2 for bidirectional
+    
     def forward(self, x):
-        # Embedding
-        x = self.embedding(x)  # [batch, seq_len, emb_dim]
+        # x shape: (batch_size, seq_len)
         
-        # CNN branch
-        x_conv = x.permute(0, 2, 1)  # [batch, emb_dim, seq_len]
+        # Embedding
+        embedded = self.embedding(x)  # (batch_size, seq_len, embedding_dim)
+        
+        # CNN
+        embedded = embedded.permute(0, 2, 1)  # (batch_size, embedding_dim, seq_len)
         conv_outputs = []
         for conv in self.convs:
-            conv_out = conv(x_conv)
-            conv_out = F.adaptive_avg_pool1d(conv_out, 1).squeeze(-1)
+            conv_out = F.relu(conv(embedded))  # (batch_size, num_filters, seq_len - filter_size + 1)
+            conv_out = F.max_pool1d(
+                conv_out,
+                conv_out.shape[2]
+            ).squeeze(2)  # (batch_size, num_filters)
             conv_outputs.append(conv_out)
         
-        # RNN branch
-        lstm_out, _ = self.bilstm(x)
-        gru_out, _ = self.bigru(lstm_out)
-        attention_out = self.attention(gru_out)
-        rnn_out = F.adaptive_avg_pool1d(attention_out.permute(0, 2, 1), 1).squeeze(-1)
+        # Concatenate CNN outputs
+        conv_cat = torch.cat(conv_outputs, dim=1)  # (batch_size, num_filters * len(filter_sizes))
         
-        # Concatenate features
-        concat = torch.cat(conv_outputs + [rnn_out], dim=1)
+        # Reshape for LSTM
+        conv_cat = conv_cat.unsqueeze(1)  # (batch_size, 1, num_filters * len(filter_sizes))
+        conv_cat = conv_cat.repeat(1, x.shape[1], 1)  # (batch_size, seq_len, num_filters * len(filter_sizes))
         
-        # Dense layers with residual connection
-        x = self.fc1(concat)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = self.dropout1(x)
+        # BiLSTM
+        lstm_out, _ = self.lstm(conv_cat)  # (batch_size, seq_len, hidden_dim * 2)
         
-        x = self.fc2(x)
-        x = self.bn2(x)
-        x = F.relu(x)
-        x = self.dropout2(x)
+        # Self-attention
+        attended = self.attention(lstm_out)  # (batch_size, hidden_dim * 2)
         
-        residual = x
-        x = self.fc3(x)
-        x = self.layer_norm(x + residual)
-        x = F.relu(x)
-        x = self.dropout3(x)
+        # Dropout
+        dropped = self.dropout(attended)
         
         # Output
-        x = self.output(x)
-        x = torch.sigmoid(x)
+        out = self.fc(dropped)  # (batch_size, 1)
         
-        return x
+        return out
         
     def configure_optimizers(self, learning_rate=0.001):
         optimizer = Adam(self.parameters(), lr=learning_rate)
@@ -211,13 +166,12 @@ class ComplaintClassifier(nn.Module):
         torch.save({
             'model_state_dict': self.state_dict(),
             'model_config': {
-                'max_words': self.max_words,
-                'max_len': self.max_len,
-                'embedding_dim': self.embedding_dim,
-                'num_filters': self.num_filters,
-                'lstm_units': self.lstm_units,
-                'num_heads': self.num_heads,
-                'dropout_rate': self.dropout_rate
+                'vocab_size': self.embedding.num_embeddings,
+                'embedding_dim': self.embedding.embedding_dim,
+                'hidden_dim': self.lstm.hidden_size,
+                'num_filters': self.convs[0].out_channels,
+                'filter_sizes': [conv.kernel_size[0] for conv in self.convs],
+                'dropout': self.dropout.p
             }
         }, path)
     

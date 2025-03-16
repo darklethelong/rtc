@@ -8,230 +8,232 @@ from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+import logging
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, precision_recall_curve, roc_curve, auc
 
 from complaint_detection.utils.preprocessor import TextPreprocessor
 from complaint_detection.models.complaint_classifier import ComplaintClassifier
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 class ComplaintDataset(Dataset):
-    def __init__(self, texts, labels, preprocessor):
+    def __init__(self, texts, labels):
         self.texts = texts
         self.labels = labels
-        self.preprocessor = preprocessor
-    
+        
     def __len__(self):
         return len(self.texts)
     
     def __getitem__(self, idx):
-        text = self.texts[idx]
-        label = self.labels[idx]
-        
-        # Preprocess text
-        x = self.preprocessor.transform_text(text)
-        return torch.tensor(x, dtype=torch.long), torch.tensor(label, dtype=torch.float)
+        return torch.tensor(self.texts[idx], dtype=torch.long), torch.tensor(self.labels[idx], dtype=torch.float)
 
 def load_and_preprocess_data(data_path, preprocessor):
-    """Load and preprocess the complaint data"""
+    """Load and preprocess the data"""
     try:
-        # Load data
+        logger.info("Loading data from %s", data_path)
         df = pd.read_csv(data_path)
         
-        # Fit preprocessor on training texts
+        # Convert labels to binary
+        df['label'] = (df['label'].str.lower() == 'complaint').astype(int)
+        
+        # Preprocess texts
+        logger.info("Fitting preprocessor on training data...")
         preprocessor.fit(df['text'].values)
         
-        # Convert labels to numeric
-        df['label'] = (df['label'] == 'complaint').astype(int)
+        logger.info("Transforming texts...")
+        texts = preprocessor.transform_texts(df['text'].values)
+        labels = df['label'].values
         
-        return df['text'].values, df['label'].values
+        return texts, labels
         
     except Exception as e:
-        print(f"Error loading data: {str(e)}")
+        logger.error("Error loading data: %s", str(e))
         raise
 
-def evaluate_model(model, val_loader, device):
-    """Evaluate model performance"""
-    model.eval()
-    all_metrics = []
-    
-    with torch.no_grad():
-        for batch in val_loader:
-            metrics = model.validation_step(batch, device)
-            all_metrics.append(metrics)
-    
-    # Average metrics across batches
-    avg_metrics = {}
-    for key in all_metrics[0].keys():
-        avg_metrics[key] = np.mean([m[key] for m in all_metrics])
-    
-    return avg_metrics
-
-def plot_evaluation_metrics(metrics_history, save_dir):
-    """Plot training history"""
-    # Create directory if it doesn't exist
-    os.makedirs(save_dir, exist_ok=True)
-    
-    # Plot loss
-    plt.figure(figsize=(10, 6))
-    plt.plot(metrics_history['train_loss'], label='Training Loss')
-    plt.plot(metrics_history['val_loss'], label='Validation Loss')
-    plt.title('Model Loss Over Time')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.savefig(os.path.join(save_dir, 'loss_history.png'))
-    plt.close()
-    
-    # Plot metrics
-    metrics = ['accuracy', 'precision', 'recall', 'f1', 'auc']
-    plt.figure(figsize=(15, 10))
-    for i, metric in enumerate(metrics, 1):
-        plt.subplot(3, 2, i)
-        plt.plot(metrics_history[f'val_{metric}'], label=f'Validation {metric.upper()}')
-        plt.title(f'Model {metric.upper()} Over Time')
-        plt.xlabel('Epoch')
-        plt.ylabel(metric.upper())
-        plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, 'metrics_history.png'))
-    plt.close()
-
-def train_model(data_path, model_save_path, device='cuda' if torch.cuda.is_available() else 'cpu'):
-    """Training pipeline with comprehensive evaluation"""
-    print(f"\nUsing device: {device}")
-    
-    # Initialize preprocessor
-    preprocessor = TextPreprocessor(
-        max_words=10000,
-        max_len=200,
-        vocab_path='domain_vocabulary.json'
+def create_data_loaders(texts, labels, batch_size=32, test_size=0.2, val_size=0.2):
+    """Create train, validation, and test data loaders"""
+    # First split into train and temp
+    train_texts, temp_texts, train_labels, temp_labels = train_test_split(
+        texts, labels, test_size=(test_size + val_size), random_state=42
     )
     
-    print("\nLoading and preprocessing data...")
-    # Load and preprocess data
-    texts, labels = load_and_preprocess_data(data_path, preprocessor)
-    
-    print("\nDataset statistics:")
-    print(f"Total samples: {len(labels)}")
-    print(f"Class distribution: {dict(zip(*np.unique(labels, return_counts=True)))}")
-    
-    # Split data
-    test_size = min(0.2, 1/len(labels))  # Adjust test size for small datasets
-    X_train, X_val, y_train, y_val = train_test_split(
-        texts, labels,
-        test_size=test_size,
-        random_state=42,
-        stratify=labels
+    # Then split temp into val and test
+    val_texts, test_texts, val_labels, test_labels = train_test_split(
+        temp_texts, temp_labels, test_size=0.5, random_state=42
     )
     
     # Create datasets
-    train_dataset = ComplaintDataset(X_train, y_train, preprocessor)
-    val_dataset = ComplaintDataset(X_val, y_val, preprocessor)
+    train_dataset = ComplaintDataset(train_texts, train_labels)
+    val_dataset = ComplaintDataset(val_texts, val_labels)
+    test_dataset = ComplaintDataset(test_texts, test_labels)
     
-    # Create dataloaders
-    batch_size = min(32, len(y_train))  # Adjust batch size for small datasets
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=0  # Adjust based on your system
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0  # Adjust based on your system
-    )
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size)
     
-    # Initialize model
-    model = ComplaintClassifier(
-        max_words=10000,
-        max_len=200,
-        embedding_dim=100,
-        num_filters=128,
-        lstm_units=64,
-        num_heads=8,
-        device=device
-    )
-    
-    # Configure training
-    optimizer, scheduler = model.configure_optimizers(learning_rate=0.001)
-    num_epochs = 10
-    best_val_loss = float('inf')
-    patience = 3
-    patience_counter = 0
-    
-    # Training history
-    history = {
-        'train_loss': [],
-        'val_loss': [],
-        'val_accuracy': [],
-        'val_precision': [],
-        'val_recall': [],
-        'val_f1': [],
-        'val_auc': []
-    }
-    
-    print("\nStarting training...")
-    for epoch in range(num_epochs):
-        model.train()
-        train_losses = []
+    return train_loader, val_loader, test_loader
+
+def train_model(data_path, model_save_path, preprocessor=None, epochs=10, batch_size=32, learning_rate=0.001):
+    """Train the complaint detection model"""
+    try:
+        # Set device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        logger.info("Using device: %s", device)
+        
+        # Load and preprocess data
+        logger.info("Loading and preprocessing data...")
+        texts, labels = load_and_preprocess_data(data_path, preprocessor)
+        
+        # Create data loaders
+        train_loader, val_loader, test_loader = create_data_loaders(
+            texts, labels, batch_size=batch_size
+        )
+        
+        # Initialize model
+        vocab_size = preprocessor.get_vocab_size()
+        model = ComplaintClassifier(vocab_size=vocab_size).to(device)
+        
+        # Initialize optimizer and loss function
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        criterion = torch.nn.BCEWithLogitsLoss()
         
         # Training loop
-        progress_bar = tqdm(train_loader, desc=f'Epoch {epoch + 1}/{num_epochs}')
-        for batch in progress_bar:
-            optimizer.zero_grad()
-            loss = model.training_step(batch, device)
-            loss.backward()
-            optimizer.step()
-            train_losses.append(loss.item())
+        best_val_loss = float('inf')
+        patience = 3
+        patience_counter = 0
+        
+        for epoch in range(epochs):
+            # Training phase
+            model.train()
+            train_loss = 0
+            train_steps = 0
             
-            # Update progress bar
-            progress_bar.set_postfix({'train_loss': np.mean(train_losses)})
-        
-        # Validation
-        val_metrics = evaluate_model(model, val_loader, device)
-        
-        # Update learning rate
-        scheduler.step(val_metrics['val_loss'])
-        
-        # Update history
-        history['train_loss'].append(np.mean(train_losses))
-        for key, value in val_metrics.items():
-            history[key].append(value)
-        
-        # Print metrics
-        print(f"\nEpoch {epoch + 1}/{num_epochs}")
-        print(f"Train Loss: {np.mean(train_losses):.4f}")
-        print(f"Val Loss: {val_metrics['val_loss']:.4f}")
-        print(f"Val Accuracy: {val_metrics['accuracy']:.4f}")
-        print(f"Val F1-Score: {val_metrics['f1']:.4f}")
-        
-        # Early stopping
-        if val_metrics['val_loss'] < best_val_loss:
-            best_val_loss = val_metrics['val_loss']
-            patience_counter = 0
-            # Save best model
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_dir = os.path.join(model_save_path, f"model_{timestamp}")
-            os.makedirs(save_dir, exist_ok=True)
-            model.save_model(os.path.join(save_dir, "best_model.pt"))
+            for batch_texts, batch_labels in tqdm(train_loader, desc=f'Epoch {epoch + 1}/{epochs}'):
+                batch_texts, batch_labels = batch_texts.to(device), batch_labels.to(device)
+                
+                optimizer.zero_grad()
+                outputs = model(batch_texts)
+                loss = criterion(outputs.squeeze(), batch_labels)
+                
+                loss.backward()
+                optimizer.step()
+                
+                train_loss += loss.item()
+                train_steps += 1
             
-            # Save preprocessor
-            preprocessor.save_domain_knowledge(os.path.join(save_dir, "domain_vocabulary.json"))
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                print("\nEarly stopping triggered!")
-                break
-    
-    # Plot and save metrics
-    plot_evaluation_metrics(history, save_dir)
-    
-    # Save training history
-    with open(os.path.join(save_dir, 'training_history.json'), 'w') as f:
-        json.dump(history, f, indent=2)
-    
-    print(f"\nTraining completed! Results saved to: {save_dir}")
-    return model, preprocessor, history
+            avg_train_loss = train_loss / train_steps
+            
+            # Validation phase
+            model.eval()
+            val_loss = 0
+            val_steps = 0
+            
+            with torch.no_grad():
+                for batch_texts, batch_labels in val_loader:
+                    batch_texts, batch_labels = batch_texts.to(device), batch_labels.to(device)
+                    outputs = model(batch_texts)
+                    loss = criterion(outputs.squeeze(), batch_labels)
+                    
+                    val_loss += loss.item()
+                    val_steps += 1
+            
+            avg_val_loss = val_loss / val_steps
+            
+            logger.info(
+                f'Epoch {epoch + 1}: '
+                f'train_loss = {avg_train_loss:.4f}, '
+                f'val_loss = {avg_val_loss:.4f}'
+            )
+            
+            # Early stopping
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                patience_counter = 0
+                
+                # Save best model
+                os.makedirs(model_save_path, exist_ok=True)
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'epoch': epoch,
+                    'val_loss': best_val_loss
+                }, os.path.join(model_save_path, 'best_model.pt'))
+                
+                # Save preprocessor
+                preprocessor.save_domain_knowledge(
+                    os.path.join(model_save_path, 'preprocessor.json')
+                )
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    logger.info("Early stopping triggered")
+                    break
+        
+        # Evaluate on test set
+        model.eval()
+        all_preds = []
+        all_labels = []
+        
+        with torch.no_grad():
+            for batch_texts, batch_labels in test_loader:
+                batch_texts, batch_labels = batch_texts.to(device), batch_labels.to(device)
+                outputs = model(batch_texts)
+                preds = torch.sigmoid(outputs.squeeze())
+                
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(batch_labels.cpu().numpy())
+        
+        # Convert to numpy arrays
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+        
+        # Calculate metrics
+        binary_preds = (all_preds >= 0.5).astype(int)
+        report = classification_report(all_labels, binary_preds)
+        logger.info("\nClassification Report:\n%s", report)
+        
+        # Plot ROC curve
+        fpr, tpr, _ = roc_curve(all_labels, all_preds)
+        roc_auc = auc(fpr, tpr)
+        
+        plt.figure()
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver Operating Characteristic (ROC) Curve')
+        plt.legend(loc="lower right")
+        plt.savefig(os.path.join(model_save_path, 'roc_curve.png'))
+        
+        # Plot Precision-Recall curve
+        precision, recall, _ = precision_recall_curve(all_labels, all_preds)
+        pr_auc = auc(recall, precision)
+        
+        plt.figure()
+        plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (AUC = {pr_auc:.2f})')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title('Precision-Recall Curve')
+        plt.legend(loc="lower right")
+        plt.savefig(os.path.join(model_save_path, 'pr_curve.png'))
+        
+        return model, preprocessor, {
+            'train_loss': avg_train_loss,
+            'val_loss': avg_val_loss,
+            'roc_auc': roc_auc,
+            'pr_auc': pr_auc
+        }
+        
+    except Exception as e:
+        logger.error("Error during training: %s", str(e))
+        raise
 
 def main():
     # Set paths

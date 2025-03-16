@@ -3,31 +3,149 @@ import nltk
 import json
 import os
 from nltk.tokenize import word_tokenize
-from nltk.corpus import stopwords
+from nltk.corpus import stopwords, wordnet
 from nltk.stem import WordNetLemmatizer
 import numpy as np
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from collections import Counter
+
+# Download required NLTK data
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+nltk.download('averaged_perceptron_tagger')
 
 class TextPreprocessor:
     def __init__(self, max_words=10000, max_len=200, vocab_path=None):
         self.max_words = max_words
         self.max_len = max_len
-        self.tokenizer = Tokenizer(num_words=max_words, oov_token='<UNK>')
+        self.vocab_path = vocab_path
+        self.word2idx = {'<PAD>': 0, '<UNK>': 1}
+        self.idx2word = {0: '<PAD>', 1: '<UNK>'}
+        self.word_counts = Counter()
+        self.stop_words = set(stopwords.words('english'))
         self.lemmatizer = WordNetLemmatizer()
         
-        # Download required NLTK data
-        for resource in ['punkt', 'stopwords', 'wordnet']:
-            try:
-                nltk.data.find(f'tokenizers/{resource}' if resource == 'punkt' else f'corpora/{resource}')
-            except LookupError:
-                nltk.download(resource)
+        # Load domain vocabulary if exists
+        if vocab_path and os.path.exists(vocab_path):
+            self.load_domain_knowledge(vocab_path)
+    
+    def get_wordnet_pos(self, word, tag):
+        """Map POS tag to first character lemmatize() accepts"""
+        tag_dict = {
+            "J": wordnet.ADJ,
+            "N": wordnet.NOUN,
+            "V": wordnet.VERB,
+            "R": wordnet.ADV
+        }
+        return tag_dict.get(tag[0], wordnet.NOUN)
+    
+    def clean_text(self, text):
+        """Clean and normalize text"""
+        # Convert to lowercase
+        text = text.lower()
+        
+        # Remove special characters and digits
+        text = re.sub(r'[^a-zA-Z\s]', '', text)
+        
+        # Remove extra whitespace
+        text = ' '.join(text.split())
+        
+        return text
+    
+    def tokenize_and_lemmatize(self, text):
+        """Tokenize and lemmatize text"""
+        # Tokenize
+        tokens = word_tokenize(text)
+        
+        # POS tagging
+        pos_tags = nltk.pos_tag(tokens)
+        
+        # Lemmatize with correct POS tag
+        lemmatized = [
+            self.lemmatizer.lemmatize(
+                word,
+                self.get_wordnet_pos(word, tag)
+            ) for word, tag in pos_tags if word not in self.stop_words
+        ]
+        
+        return lemmatized
+    
+    def fit(self, texts):
+        """Build vocabulary from texts"""
+        # Reset word counts
+        self.word_counts = Counter()
+        
+        # Process all texts
+        for text in texts:
+            # Clean text
+            cleaned_text = self.clean_text(text)
             
-        self.stop_words = set(stopwords.words('english'))
+            # Tokenize and lemmatize
+            tokens = self.tokenize_and_lemmatize(cleaned_text)
+            
+            # Update word counts
+            self.word_counts.update(tokens)
         
-        # Load domain-specific vocabulary and patterns
-        self._load_domain_knowledge(vocab_path)
+        # Build vocabulary using most common words
+        vocab_words = ['<PAD>', '<UNK>'] + [
+            word for word, _ in self.word_counts.most_common(self.max_words - 2)
+        ]
         
+        # Create word to index mapping
+        self.word2idx = {word: idx for idx, word in enumerate(vocab_words)}
+        self.idx2word = {idx: word for word, idx in self.word2idx.items()}
+    
+    def transform_text(self, text):
+        """Convert text to sequence of indices"""
+        # Clean text
+        cleaned_text = self.clean_text(text)
+        
+        # Tokenize and lemmatize
+        tokens = self.tokenize_and_lemmatize(cleaned_text)
+        
+        # Convert to indices
+        sequence = [
+            self.word2idx.get(token, self.word2idx['<UNK>'])
+            for token in tokens[:self.max_len]
+        ]
+        
+        # Pad sequence
+        if len(sequence) < self.max_len:
+            sequence += [self.word2idx['<PAD>']] * (self.max_len - len(sequence))
+        
+        return sequence
+    
+    def transform_texts(self, texts):
+        """Convert multiple texts to sequences"""
+        return [self.transform_text(text) for text in texts]
+    
+    def get_vocab_size(self):
+        """Get size of vocabulary"""
+        return len(self.word2idx)
+    
+    def save_domain_knowledge(self, path):
+        """Save vocabulary and word counts"""
+        domain_knowledge = {
+            'word2idx': self.word2idx,
+            'idx2word': self.idx2word,
+            'word_counts': dict(self.word_counts)
+        }
+        
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(domain_knowledge, f, indent=2)
+    
+    def load_domain_knowledge(self, path):
+        """Load vocabulary and word counts"""
+        with open(path, 'r') as f:
+            domain_knowledge = json.load(f)
+        
+        self.word2idx = domain_knowledge['word2idx']
+        self.idx2word = {int(k): v for k, v in domain_knowledge['idx2word'].items()}
+        self.word_counts = Counter(domain_knowledge['word_counts'])
+
     def _load_domain_knowledge(self, vocab_path=None):
         """Load or initialize domain-specific knowledge"""
         self.domain_knowledge = {
@@ -77,23 +195,6 @@ class TextPreprocessor:
         if category in self.domain_knowledge:
             self.domain_knowledge[category].update(new_terms)
 
-    def clean_text(self, text):
-        """Clean and normalize text with enhanced masking"""
-        # Convert to lowercase
-        text = text.lower()
-        
-        # Handle masked information
-        for pattern in self.domain_knowledge['masked_patterns']:
-            text = re.sub(pattern, 'MASKED_INFO', text)
-        
-        # Remove special characters but keep important punctuation
-        text = re.sub(r'[^a-zA-Z\s!?.]', '', text)
-        
-        # Replace multiple spaces
-        text = re.sub(r'\s+', ' ', text)
-        
-        return text.strip()
-    
     def extract_features(self, text):
         """Extract rich features from text"""
         # Basic features
