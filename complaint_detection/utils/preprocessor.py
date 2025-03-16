@@ -6,9 +6,8 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords, wordnet
 from nltk.stem import WordNetLemmatizer
 import numpy as np
-from tensorflow.keras.preprocessing.text import Tokenizer
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 from collections import Counter
+import torch
 
 # Download required NLTK data
 nltk.download('punkt')
@@ -17,7 +16,7 @@ nltk.download('wordnet')
 nltk.download('averaged_perceptron_tagger')
 
 class TextPreprocessor:
-    def __init__(self, max_words=10000, max_len=200, vocab_path=None):
+    def __init__(self, max_words=15000, max_len=1000, vocab_path=None):
         self.max_words = max_words
         self.max_len = max_len
         self.vocab_path = vocab_path
@@ -114,12 +113,15 @@ class TextPreprocessor:
         # Pad sequence
         if len(sequence) < self.max_len:
             sequence += [self.word2idx['<PAD>']] * (self.max_len - len(sequence))
+        else:
+            sequence = sequence[:self.max_len]
         
-        return sequence
+        return torch.tensor(sequence, dtype=torch.long)
     
     def transform_texts(self, texts):
         """Convert multiple texts to sequences"""
-        return [self.transform_text(text) for text in texts]
+        sequences = [self.transform_text(text) for text in texts]
+        return torch.stack(sequences)
     
     def get_vocab_size(self):
         """Get size of vocabulary"""
@@ -150,30 +152,111 @@ class TextPreprocessor:
         """Load or initialize domain-specific knowledge"""
         self.domain_knowledge = {
             'banking_terms': {
-                'account', 'transaction', 'deposit', 'withdrawal', 'balance',
-                'credit', 'debit', 'transfer', 'payment', 'fee', 'charge',
-                'overdraft', 'interest', 'loan', 'mortgage', 'statement',
-                'pin', 'atm', 'branch', 'online', 'mobile', 'banking',
-                'savings', 'checking', 'wire', 'ach', 'direct deposit'
+                # Account-related terms
+                'account', 'balance', 'statement', 'transaction', 'history',
+                'savings', 'checking', 'deposit', 'withdrawal', 'transfer',
+                'joint account', 'business account', 'personal account',
+                
+                # Payment-related terms
+                'payment', 'transfer', 'wire', 'ach', 'direct deposit',
+                'bill pay', 'autopay', 'recurring payment', 'standing order',
+                'payee', 'beneficiary', 'remittance', 'swift', 'routing number',
+                
+                # Card-related terms
+                'credit card', 'debit card', 'card number', 'pin', 'cvv',
+                'expiration date', 'chip', 'contactless', 'swipe', 'declined',
+                'authorization', 'limit', 'credit limit', 'available credit',
+                
+                # Fees and charges
+                'fee', 'charge', 'surcharge', 'commission', 'interest',
+                'rate', 'apr', 'annual fee', 'maintenance fee', 'overdraft fee',
+                'minimum balance', 'insufficient funds', 'nsf', 'late fee',
+                
+                # Loan-related terms
+                'loan', 'mortgage', 'refinance', 'interest rate', 'principal',
+                'collateral', 'down payment', 'installment', 'credit score',
+                'application', 'approval', 'term', 'amortization',
+                
+                # Digital banking
+                'online banking', 'mobile banking', 'app', 'website', 'login',
+                'password', 'security code', 'two-factor', 'authentication',
+                'notification', 'alert', 'e-statement', 'paperless',
+                
+                # Service channels
+                'atm', 'branch', 'teller', 'representative', 'customer service',
+                'call center', 'phone banking', 'automated system', 'ivr',
+                'queue', 'wait time', 'callback', 'appointment',
+                
+                # Security-related
+                'fraud', 'suspicious', 'unauthorized', 'security', 'freeze',
+                'lock', 'unlock', 'dispute', 'claim', 'investigation',
+                'verification', 'identity', 'password reset'
             },
             'complaint_indicators': {
+                # Direct complaint words
                 'issue', 'problem', 'error', 'mistake', 'wrong', 'incorrect',
                 'failed', 'failure', 'denied', 'reject', 'delay', 'late',
                 'missing', 'lost', 'stolen', 'fraud', 'unauthorized',
-                'dissatisfied', 'unhappy', 'angry', 'frustrated', 'upset'
+                
+                # Emotional indicators
+                'dissatisfied', 'unhappy', 'angry', 'frustrated', 'upset',
+                'disappointed', 'annoyed', 'concerned', 'worried', 'anxious',
+                'stressed', 'confused', 'inconvenienced', 'unacceptable',
+                
+                # Urgency indicators
+                'urgent', 'immediate', 'asap', 'emergency', 'critical',
+                'important', 'pressing', 'deadline', 'overdue', 'escalate',
+                'supervisor', 'manager', 'complaint department',
+                
+                # Service quality indicators
+                'poor service', 'bad experience', 'unprofessional', 'rude',
+                'incompetent', 'unhelpful', 'unresponsive', 'slow', 'waiting',
+                'long time', 'never received', 'still waiting', 'again',
+                
+                # Resolution demands
+                'resolve', 'fix', 'correct', 'rectify', 'address', 'solve',
+                'refund', 'reimburse', 'compensate', 'credit back', 'reverse',
+                'waive', 'remove', 'adjust', 'investigate',
+                
+                # Escalation indicators
+                'complaint', 'grievance', 'dispute', 'formal complaint',
+                'legal', 'lawyer', 'attorney', 'regulatory', 'report',
+                'better business bureau', 'bbb', 'cfpb', 'authorities'
             },
-            'masked_patterns': {
-                r'\b[x]+\b',  # Basic x pattern
-                r'\b\d{4}[-\s]?(?:\d{4}[-\s]?){2}\d{4}\b',  # Card numbers
-                r'\b\d{3}[-\s]?\d{3}[-\s]?\d{4}\b',  # Phone numbers
-                r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'  # Emails
+            'service_context': {
+                # Time-related context
+                'yesterday', 'last week', 'previous month', 'recent',
+                'repeatedly', 'multiple times', 'again', 'still', 'pending',
+                
+                # Amount-related context
+                'dollars', 'cents', 'amount', 'total', 'balance', 'money',
+                'funds', 'available', 'pending', 'hold', 'cleared',
+                
+                # Process-related context
+                'process', 'procedure', 'policy', 'requirement', 'verification',
+                'confirmation', 'approval', 'rejection', 'status', 'update'
             }
         }
 
-        # Add domain-specific stop words
+        # Add domain-specific stop words while preserving important context
         self.domain_stop_words = {
-            'please', 'thank', 'thanks', 'hello', 'hi', 'hey', 'okay', 'ok', 
-            'yes', 'no', 'bye', 'goodbye', 'sir', 'madam', 'mr', 'mrs', 'ms'
+            # Basic conversational words
+            'please', 'thank', 'thanks', 'hello', 'hi', 'hey', 'bye', 
+            'goodbye', 'good morning', 'good afternoon', 'good evening',
+            
+            # Titles and honorifics
+            'sir', 'madam', 'mr', 'mrs', 'ms', 'dr', 'prof',
+            
+            # Basic responses (preserve context-specific ones)
+            'yes', 'no', 'maybe', 'okay', 'ok', 'alright', 'sure',
+            
+            # Common verbs (preserve action-specific ones)
+            'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+            'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+            
+            # Articles and basic prepositions
+            'a', 'an', 'the', 'in', 'on', 'at', 'to', 'for', 'of',
+            'with', 'by', 'from', 'up', 'down', 'over', 'under'
         }
         self.stop_words.update(self.domain_stop_words)
 
@@ -185,16 +268,6 @@ class TextPreprocessor:
                     if category in self.domain_knowledge:
                         self.domain_knowledge[category].update(terms)
 
-    def save_domain_knowledge(self, path):
-        """Save domain knowledge for future use"""
-        with open(path, 'w') as f:
-            json.dump(self.domain_knowledge, f, indent=2)
-
-    def update_domain_knowledge(self, new_terms, category):
-        """Update domain knowledge with new terms"""
-        if category in self.domain_knowledge:
-            self.domain_knowledge[category].update(new_terms)
-
     def extract_features(self, text):
         """Extract rich features from text"""
         # Basic features
@@ -202,7 +275,6 @@ class TextPreprocessor:
             'has_exclamation': '!' in text,
             'has_question': '?' in text,
             'word_count': len(text.split()),
-            'masked_info_count': text.count('MASKED_INFO'),
         }
         
         # Domain-specific features
@@ -244,63 +316,5 @@ class TextPreprocessor:
     def prepare_conversation(self, conversation):
         """Process conversation with enhanced context awareness"""
         lines = conversation.split('\n')
-        caller_utterances = []
-        agent_utterances = []
-        context = []
-        
-        for line in lines:
-            if line.strip():
-                if line.lower().startswith('caller:'):
-                    caller_text = line.split(':', 1)[1].strip()
-                    caller_utterances.append(caller_text)
-                    context.append(('caller', caller_text))
-                elif line.lower().startswith('agent:'):
-                    agent_text = line.split(':', 1)[1].strip()
-                    agent_utterances.append(agent_text)
-                    context.append(('agent', agent_text))
-        
-        # Combine caller utterances with context
-        caller_text = ' [SEP] '.join(caller_utterances)
-        
-        # Process the combined text
-        processed_text = self.preprocess_text(caller_text)
-        features = self.extract_features(caller_text)
-        
-        # Add contextual features
-        features['total_turns'] = len(context)
-        features['caller_turns'] = len(caller_utterances)
-        features['agent_turns'] = len(agent_utterances)
-        
-        return processed_text, features
-    
-    def prepare_features(self, features_list):
-        """Convert features to numpy array with enhanced features"""
-        feature_array = np.array([
-            [
-                int(f['has_exclamation']),
-                int(f['has_question']),
-                f['word_count'],
-                f['masked_info_count'],
-                f['banking_term_count'],
-                f['complaint_indicator_count'],
-                int(f['has_banking_terms']),
-                int(f['has_complaint_indicators']),
-                f['total_turns'],
-                f['caller_turns'],
-                f['agent_turns']
-            ]
-            for f in features_list
-        ])
-        return feature_array
-
-    def fit_tokenizer(self, texts):
-        """Fit tokenizer with domain knowledge"""
-        # Add domain terms to vocabulary
-        domain_terms = list(self.domain_knowledge['banking_terms'] | 
-                          self.domain_knowledge['complaint_indicators'])
-        self.tokenizer.fit_on_texts(texts + domain_terms)
-    
-    def texts_to_sequences(self, texts):
-        """Convert texts to sequences with handling of unknown tokens"""
-        sequences = self.tokenizer.texts_to_sequences(texts)
-        return pad_sequences(sequences, maxlen=self.max_len, padding='post') 
+        processed_lines = [self.preprocess_text(line) for line in lines]
+        return ' '.join(processed_lines) 

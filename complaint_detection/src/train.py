@@ -27,7 +27,9 @@ class ComplaintDataset(Dataset):
         return len(self.texts)
     
     def __getitem__(self, idx):
-        return torch.tensor(self.texts[idx], dtype=torch.long), torch.tensor(self.labels[idx], dtype=torch.float)
+        text_tensor = torch.tensor(self.texts[idx], dtype=torch.long)
+        label_tensor = torch.tensor([self.labels[idx]], dtype=torch.float)  # Wrap in list to make it 1D tensor
+        return text_tensor, label_tensor
 
 def load_and_preprocess_data(data_path, preprocessor):
     """Load and preprocess the data"""
@@ -38,6 +40,18 @@ def load_and_preprocess_data(data_path, preprocessor):
         # Convert labels to binary
         df['label'] = (df['label'].str.lower() == 'complaint').astype(int)
         
+        # Log data distribution
+        total_samples = len(df)
+        complaint_samples = df['label'].sum()
+        non_complaint_samples = total_samples - complaint_samples
+        logger.info(f"Data distribution:")
+        logger.info(f"Total samples: {total_samples}")
+        logger.info(f"Complaint samples: {complaint_samples} ({complaint_samples/total_samples*100:.2f}%)")
+        logger.info(f"Non-complaint samples: {non_complaint_samples} ({non_complaint_samples/total_samples*100:.2f}%)")
+        
+        # Calculate class weights
+        pos_weight = non_complaint_samples / complaint_samples if complaint_samples > 0 else 1.0
+        
         # Preprocess texts
         logger.info("Fitting preprocessor on training data...")
         preprocessor.fit(df['text'].values)
@@ -46,23 +60,28 @@ def load_and_preprocess_data(data_path, preprocessor):
         texts = preprocessor.transform_texts(df['text'].values)
         labels = df['label'].values
         
-        return texts, labels
+        return texts, labels, pos_weight
         
     except Exception as e:
         logger.error("Error loading data: %s", str(e))
         raise
 
-def create_data_loaders(texts, labels, batch_size=32, test_size=0.2, val_size=0.2):
+def create_data_loaders(texts, labels, batch_size=2, test_size=0.2, val_size=0.2):
     """Create train, validation, and test data loaders"""
     # First split into train and temp
     train_texts, temp_texts, train_labels, temp_labels = train_test_split(
-        texts, labels, test_size=(test_size + val_size), random_state=42
+        texts, labels, test_size=(test_size + val_size), random_state=42, stratify=labels
     )
     
     # Then split temp into val and test
     val_texts, test_texts, val_labels, test_labels = train_test_split(
-        temp_texts, temp_labels, test_size=0.5, random_state=42
+        temp_texts, temp_labels, test_size=0.5, random_state=42, stratify=temp_labels
     )
+    
+    # Log split sizes
+    logger.info(f"Train set size: {len(train_texts)}")
+    logger.info(f"Validation set size: {len(val_texts)}")
+    logger.info(f"Test set size: {len(test_texts)}")
     
     # Create datasets
     train_dataset = ComplaintDataset(train_texts, train_labels)
@@ -76,7 +95,7 @@ def create_data_loaders(texts, labels, batch_size=32, test_size=0.2, val_size=0.
     
     return train_loader, val_loader, test_loader
 
-def train_model(data_path, model_save_path, preprocessor=None, epochs=10, batch_size=32, learning_rate=0.001):
+def train_model(data_path, model_save_path, preprocessor=None, epochs=20, batch_size=2, learning_rate=0.001):
     """Train the complaint detection model"""
     try:
         # Set device
@@ -85,7 +104,7 @@ def train_model(data_path, model_save_path, preprocessor=None, epochs=10, batch_
         
         # Load and preprocess data
         logger.info("Loading and preprocessing data...")
-        texts, labels = load_and_preprocess_data(data_path, preprocessor)
+        texts, labels, pos_weight = load_and_preprocess_data(data_path, preprocessor)
         
         # Create data loaders
         train_loader, val_loader, test_loader = create_data_loaders(
@@ -96,13 +115,13 @@ def train_model(data_path, model_save_path, preprocessor=None, epochs=10, batch_
         vocab_size = preprocessor.get_vocab_size()
         model = ComplaintClassifier(vocab_size=vocab_size).to(device)
         
-        # Initialize optimizer and loss function
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        criterion = torch.nn.BCEWithLogitsLoss()
+        # Initialize optimizer and loss function with class weights
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=0.01)
+        criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight]).to(device))
         
         # Training loop
         best_val_loss = float('inf')
-        patience = 3
+        patience = 5  # Increased patience for small dataset
         patience_counter = 0
         
         for epoch in range(epochs):
@@ -115,8 +134,8 @@ def train_model(data_path, model_save_path, preprocessor=None, epochs=10, batch_
                 batch_texts, batch_labels = batch_texts.to(device), batch_labels.to(device)
                 
                 optimizer.zero_grad()
-                outputs = model(batch_texts)
-                loss = criterion(outputs.squeeze(), batch_labels)
+                outputs, l2_reg = model(batch_texts)
+                loss = criterion(outputs, batch_labels) + l2_reg
                 
                 loss.backward()
                 optimizer.step()
@@ -134,8 +153,8 @@ def train_model(data_path, model_save_path, preprocessor=None, epochs=10, batch_
             with torch.no_grad():
                 for batch_texts, batch_labels in val_loader:
                     batch_texts, batch_labels = batch_texts.to(device), batch_labels.to(device)
-                    outputs = model(batch_texts)
-                    loss = criterion(outputs.squeeze(), batch_labels)
+                    outputs, l2_reg = model(batch_texts)
+                    loss = criterion(outputs, batch_labels) + l2_reg
                     
                     val_loss += loss.item()
                     val_steps += 1
@@ -180,8 +199,8 @@ def train_model(data_path, model_save_path, preprocessor=None, epochs=10, batch_
         with torch.no_grad():
             for batch_texts, batch_labels in test_loader:
                 batch_texts, batch_labels = batch_texts.to(device), batch_labels.to(device)
-                outputs = model(batch_texts)
-                preds = torch.sigmoid(outputs.squeeze())
+                outputs, _ = model(batch_texts)
+                preds = torch.sigmoid(outputs)
                 
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(batch_labels.cpu().numpy())

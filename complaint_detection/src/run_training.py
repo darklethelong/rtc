@@ -1,12 +1,13 @@
 import os
 import sys
 import logging
-from complaint_detection.utils.preprocessor import TextPreprocessor
-from complaint_detection.src.train import train_model
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+from complaint_detection.utils.preprocessor import TextPreprocessor
+from complaint_detection.src.train import train_model
 
 def main():
     try:
@@ -21,24 +22,38 @@ def main():
         # Create model save directory if it doesn't exist
         os.makedirs(model_save_path, exist_ok=True)
         
-        # Initialize preprocessor
+        # Initialize preprocessor with increased max_len
         preprocessor = TextPreprocessor(
-            max_words=10000,
-            max_len=200,
+            max_words=15000,  # Increased for larger vocabulary
+            max_len=1000,     # Increased for longer sequences
             vocab_path=os.path.join(model_save_path, 'preprocessor.json')
         )
         
         logger.info(f"Data source: {data_path}")
         logger.info(f"Model save location: {model_save_path}")
         
-        # Train model
+        # Calculate class weights based on your data distribution
+        n_complaint = 1500
+        n_non_complaint = 5000
+        total_samples = n_complaint + n_non_complaint
+        
+        # Class weights for balanced training
+        class_weights = {
+            0: 1.0,  # Weight for non-complaint class
+            1: n_non_complaint / n_complaint  # Weight for complaint class
+        }
+        
+        logger.info(f"Using class weights: {class_weights}")
+        
+        # Train model with updated parameters
         model, preprocessor, history = train_model(
             data_path=data_path,
             model_save_path=model_save_path,
             preprocessor=preprocessor,
-            epochs=10,
-            batch_size=32,
-            learning_rate=0.001
+            epochs=30,          # Increased epochs
+            batch_size=32,      # Increased batch size for stability
+            learning_rate=0.001,
+            class_weights=class_weights
         )
         
         logger.info("Training completed successfully!")

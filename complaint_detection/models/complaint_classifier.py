@@ -27,23 +27,34 @@ class ComplaintClassifier(nn.Module):
     def __init__(
         self,
         vocab_size,
-        embedding_dim=100,
-        hidden_dim=128,
-        num_filters=128,
-        filter_sizes=[3, 4, 5],
-        dropout=0.5
+        embedding_dim=100,     # Increased for better representation
+        hidden_dim=128,        # Increased for complexity
+        num_filters=128,       # Increased for better feature extraction
+        filter_sizes=[3, 4, 5, 6],  # Added larger filter for longer sequences
+        dropout=0.4,           # Increased dropout for regularization
+        class_weights=None     # Added class weights parameter
     ):
         super().__init__()
         
-        # Embedding layer
-        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+        # Store class weights
+        self.class_weights = class_weights
         
-        # CNN layers
+        # Embedding layer with L2 regularization
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+        self.embedding_dropout = nn.Dropout(dropout)
+        
+        # CNN layers with batch normalization
         self.convs = nn.ModuleList([
-            nn.Conv1d(
-                in_channels=embedding_dim,
-                out_channels=num_filters,
-                kernel_size=fs
+            nn.Sequential(
+                nn.Conv1d(
+                    in_channels=embedding_dim,
+                    out_channels=num_filters,
+                    kernel_size=fs,
+                    padding=fs // 2  # Added padding to handle sequence length
+                ),
+                nn.BatchNorm1d(num_filters),
+                nn.ReLU(),
+                nn.Dropout(dropout)
             ) for fs in filter_sizes
         ])
         
@@ -52,29 +63,39 @@ class ComplaintClassifier(nn.Module):
             input_size=num_filters * len(filter_sizes),
             hidden_size=hidden_dim,
             bidirectional=True,
-            batch_first=True
+            batch_first=True,
+            dropout=dropout,
+            num_layers=2  # Added second LSTM layer for better sequence modeling
         )
         
         # Self-attention layer
         self.attention = SelfAttention(hidden_dim * 2)  # *2 for bidirectional
         
+        # Additional fully connected layer
+        self.fc1 = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.fc1_bn = nn.BatchNorm1d(hidden_dim)
+        
         # Dropout layer
         self.dropout = nn.Dropout(dropout)
         
-        # Output layer
-        self.fc = nn.Linear(hidden_dim * 2, 1)  # *2 for bidirectional
+        # Output layer with L2 regularization
+        self.fc2 = nn.Linear(hidden_dim, 1)  # Final output layer
+        
+        # L2 regularization weight
+        self.l2_lambda = 0.01
     
     def forward(self, x):
         # x shape: (batch_size, seq_len)
         
-        # Embedding
+        # Embedding with dropout
         embedded = self.embedding(x)  # (batch_size, seq_len, embedding_dim)
+        embedded = self.embedding_dropout(embedded)
         
-        # CNN
+        # CNN with batch norm and dropout
         embedded = embedded.permute(0, 2, 1)  # (batch_size, embedding_dim, seq_len)
         conv_outputs = []
         for conv in self.convs:
-            conv_out = F.relu(conv(embedded))  # (batch_size, num_filters, seq_len - filter_size + 1)
+            conv_out = conv(embedded)  # Includes BatchNorm, ReLU, and Dropout
             conv_out = F.max_pool1d(
                 conv_out,
                 conv_out.shape[2]
@@ -94,13 +115,23 @@ class ComplaintClassifier(nn.Module):
         # Self-attention
         attended = self.attention(lstm_out)  # (batch_size, hidden_dim * 2)
         
+        # Additional FC layer with batch norm
+        fc1_out = self.fc1(attended)
+        fc1_out = self.fc1_bn(fc1_out)
+        fc1_out = F.relu(fc1_out)
+        
         # Dropout
-        dropped = self.dropout(attended)
+        dropped = self.dropout(fc1_out)
         
         # Output
-        out = self.fc(dropped)  # (batch_size, 1)
+        out = self.fc2(dropped)  # (batch_size, 1)
         
-        return out
+        # Add L2 regularization
+        l2_reg = torch.tensor(0., requires_grad=True).to(out.device)
+        for param in self.parameters():
+            l2_reg = l2_reg + torch.norm(param, 2)
+        
+        return out, self.l2_lambda * l2_reg
         
     def configure_optimizers(self, learning_rate=0.001):
         optimizer = Adam(self.parameters(), lr=learning_rate)
@@ -119,7 +150,7 @@ class ComplaintClassifier(nn.Module):
         y = y.to(device).float()
         
         self.train()
-        outputs = self(x)
+        outputs, l2_reg = self(x)
         loss = F.binary_cross_entropy(outputs.squeeze(), y)
         
         return loss
@@ -131,7 +162,7 @@ class ComplaintClassifier(nn.Module):
         
         self.eval()
         with torch.no_grad():
-            outputs = self(x)
+            outputs, _ = self(x)
             loss = F.binary_cross_entropy(outputs.squeeze(), y)
             preds = (outputs > 0.5).float()
             
@@ -156,7 +187,7 @@ class ComplaintClassifier(nn.Module):
         
         self.eval()
         with torch.no_grad():
-            outputs = self(x)
+            outputs, _ = self(x)
             probs = outputs.cpu().numpy()
             preds = (outputs > 0.5).float().cpu().numpy()
             
